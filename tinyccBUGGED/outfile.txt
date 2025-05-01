@@ -1,0 +1,32 @@
+./tcc_n -o tcc.o -c tcc.c -I. -DONE_SOURCE=0 -DTCC_GITHASH="\"2025-03-28 mob@f10ab130*\"" -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o libtcc.o -c libtcc.c -I. -DONE_SOURCE=0 -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -DC2STR conftest.c -o c2str.exe && ./c2str.exe include/tccdefs.h tccdefs_.h
+./tcc_n -o tccpp.o -c tccpp.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o tccgen.o -c tccgen.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o tccdbg.o -c tccdbg.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o tccelf.o -c tccelf.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o tccasm.o -c tccasm.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o tccrun.o -c tccrun.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o x86_64-gen.o -c x86_64-gen.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o x86_64-link.o -c x86_64-link.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+./tcc_n -o i386-asm.o -c i386-asm.c -I. -Wall -O2 -Wdeclaration-after-statement -Wno-unused-result
+ar rcs libtcc.a libtcc.o tccpp.o tccgen.o tccdbg.o tccelf.o tccasm.o tccrun.o x86_64-gen.o x86_64-link.o i386-asm.o
+./tcc_n -o tcc tcc.o libtcc.a -lm -ldl -lpthread
+make[1]: Entering directory '/home/dominick/Dropbox/InfoSec/Assignments/CodingAssignment/InfoSecCodingAssignment/tinycc/lib'
+../tcc -c libtcc1.c -o libtcc1.o -B.. -I..
+../tcc -c alloca.S -o alloca.o -B.. -I..
+../tcc -c alloca-bt.S -o alloca-bt.o -B.. -I..
+../tcc -c stdatomic.c -o stdatomic.o -B.. -I..
+../tcc -c atomic.S -o atomic.o -B.. -I..
+../tcc -c builtin.c -o builtin.o -B.. -I..
+../tcc -c tcov.c -o tcov.o -B.. -I..
+../tcc -c va_list.c -o va_list.o -B.. -I..
+../tcc -c dsohandle.c -o dsohandle.o -B.. -I..
+../tcc -ar rcs ../libtcc1.a libtcc1.o alloca.o alloca-bt.o stdatomic.o atomic.o builtin.o tcov.o va_list.o dsohandle.o
+../tcc -c runmain.c -o ../runmain.o -B.. -I..
+../tcc -c bt-exe.c -o ../bt-exe.o -B.. -I..
+../tcc -c bt-log.c -o ../bt-log.o -B.. -I..
+../tcc -c bcheck.c -o ../bcheck.o -B.. -I.. -bt
+make[1]: Leaving directory '/home/dominick/Dropbox/InfoSec/Assignments/CodingAssignment/InfoSecCodingAssignment/tinycc/lib'
+perl ./texi2pod.pl tcc-doc.texi tcc-doc.pod
+pod2man --section=1 --center="Tiny C Compiler" --release="0.9.28rc" tcc-doc.pod >tcc.1
