@@ -1,8 +1,3 @@
-### Team
-Dominick Iadevaia<br>
-iadevd@rpi.edu<br>
-662041582<br>
-
 ### Overview
 This repo contains the implementation of a Tiny C compiler quine that will inject a backdoor into a sample login program. We decided to implement our quine in tinycc (because we aren't insane). There are two versions of tinycc in this repository, ```tinyccBUGGED``` which contains the source code for the quine, and the development steps required to get to that point, and ```tinycc``` which is the original untampered source code.
 
