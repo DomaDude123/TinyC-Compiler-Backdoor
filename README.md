@@ -12,7 +12,7 @@ The actual changes all take place in
 
 in libtcc.c. This function is the step before compiling and allows proceeding to the compilation and allows passing the source code as a string buffer instead of a file. To inject the backdoor, the entire source file is read into a buffer, the backdoor is inserted into it, and the buffer is paed to the compilation function.
 
-The backdoor username is ```bcallahan```
+The backdoor username is ```backdoor```
 
 
 ### Development Process
@@ -33,7 +33,7 @@ The backdoor username is ```bcallahan```
 4. Compile the clean source with A to get compiler B: ```./configure && make clean && make CC=./tccBUGGED```
 5. ```cd ..```
 6. Now we compile login.c with compiler B: ```./tinycc/tcc login.c -o login```
-7. Run the new binary with the backdoor login: ```./login.out bcallahan```
+7. Run the new binary with the backdoor login: ```./login.out backdoor```
 8. Check the exit code of the binary ( should be 0 ): ```echo $?```
 
 Note that for step 2 you could also use a clean tinycc to compile compiler A
