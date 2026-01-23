@@ -28,7 +28,7 @@ cd tinyccBUGGED
 ```
 2. Compile the infected binary to make compiler A:
 ```
-./configure && make clean && make```
+./configure && make clean && make
 ```
 3. Move A into the clean source and follow it:
 ```
