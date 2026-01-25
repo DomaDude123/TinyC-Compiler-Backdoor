@@ -206,9 +206,10 @@ LIBTCCAPI int tcc_run(TCCState *s1, int argc, char **argv)
     const char *top_sym;
     jmp_buf main_jb;
 
-#if defined(__APPLE__) || defined(__FreeBSD__)
-    char **envp = NULL;
-#elif defined(__OpenBSD__) || defined(__NetBSD__)
+#if defined(__APPLE__)
+    extern char ***_NSGetEnviron(void);
+    char **envp = *_NSGetEnviron();
+#elif defined(__OpenBSD__) || defined(__NetBSD__)  || defined(__FreeBSD__)
     extern char **environ;
     char **envp = environ;
 #else
@@ -220,28 +221,38 @@ LIBTCCAPI int tcc_run(TCCState *s1, int argc, char **argv)
         return 0;
 
     tcc_add_symbol(s1, "__rt_exit", rt_exit);
-    if (s1->nostdlib) {
-        s1->run_main = top_sym = s1->elf_entryname ? s1->elf_entryname : "_start";
-    } else {
-        tcc_add_support(s1, "runmain.o");
-        s1->run_main = "_runmain";
-        top_sym = "main";
-    }
+    s1->run_main = "_runmain", top_sym = "main";
+    if (s1->elf_entryname)
+        s1->run_main = top_sym = s1->elf_entryname;
+    tcc_add_support(s1, "runmain.o");
+
     if (tcc_relocate(s1) < 0)
         return -1;
 
     prog_main = (void*)get_sym_addr(s1, s1->run_main, 1, 1);
     if ((addr_t)-1 == (addr_t)prog_main)
         return -1;
+
+    /* custom stdin for run_main, mainly if stdin is/was an input file.
+     * fileno(stdin) should remain 0, as posix mandates to use the smallest
+     * free fd, which is 0 after the initial fclose in freopen. windows too.
+     * to set stdin to the tty, use /dev/tty (posix) or con (windows).
+     */
+    if (s1->run_stdin && !freopen(s1->run_stdin, "r", stdin)) {
+        tcc_error_noabort("failed to reopen stdin from '%s'", s1->run_stdin);
+        return -1;
+    }
+
     errno = 0; /* clean errno value */
     fflush(stdout);
     fflush(stderr);
 
     ret = tcc_setjmp(s1, main_jb, tcc_get_symbol(s1, top_sym));
-    if (0 == ret)
+    if (0 == ret) {
         ret = prog_main(argc, argv, envp);
-    else if (RT_EXIT_ZERO == ret)
+    } else if (RT_EXIT_ZERO == ret) {
         ret = 0;
+    }
 
     if (s1->dflag & 16 && ret) /* tcc -dt -run ... */
         fprintf(s1->ppfp, "[returns %d]\n", ret), fflush(s1->ppfp);
@@ -276,7 +287,7 @@ static void cleanup_sections(TCCState *s1)
     do {
         for (i = --f; i < p->nb_secs; i++) {
             Section *s = p->secs[i];
-            if (s == s1->symtab || s == s1->symtab->link || s == s1->symtab->hash) {
+            if (s1->do_debug || s == s1->symtab || s == s1->symtab->link || s == s1->symtab->hash) {
                 s->data = tcc_realloc(s->data, s->data_allocated = s->data_offset);
             } else {
                 free_section(s), tcc_free(s), p->secs[i] = NULL;
@@ -288,10 +299,11 @@ static void cleanup_sections(TCCState *s1)
 /* ------------------------------------------------------------- */
 /* 0 = .text rwx  other rw (memory >= 2 pages a 4096 bytes) */
 /* 1 = .text rx   other rw (memory >= 3 pages) */
-/* 2 = .text rx  .rdata ro  .data/.bss rw (memory >= 4 pages) */
+/* 2 = .debug    .debug ro (optional) */
+/* 3 = .text rx  .rdata ro  .data/.bss rw (memory >= 4 pages) */
 
 /* Some targets implement secutiry options that do not allow write in
-   executable code. These targets need CONFIG_RUNMEM_RO=1.
+   executable code. These targets need CONFIG_RUNMEM_RO=2.
    The disadvantage of this is that it requires a little bit more memory. */
 
 #ifndef CONFIG_RUNMEM_RO
@@ -312,6 +324,7 @@ static int tcc_relocate_ex(TCCState *s1, void *ptr, unsigned ptr_diff)
     addr_t mem, addr;
 
     if (NULL == ptr) {
+        s1->nb_errors = 0;
 #ifdef TCC_TARGET_PE
         pe_output_file(s1, NULL);
 #else
@@ -331,12 +344,13 @@ redo:
     if (copy == 3)
         return 0;
 
-    for (k = 0; k < 3; ++k) { /* 0:rx, 1:ro, 2:rw sections */
+    for (k = 0; k < 4; ++k) { /* 0:rx, 1:ro, 2:ro debug , 3:rw sections */
         n = 0; addr = 0;
         for(i = 1; i < s1->nb_sections; i++) {
             static const char shf[] = {
-                SHF_ALLOC|SHF_EXECINSTR, SHF_ALLOC, SHF_ALLOC|SHF_WRITE
+                SHF_ALLOC|SHF_EXECINSTR, SHF_ALLOC, 0, SHF_ALLOC|SHF_WRITE
                 };
+	    if (k == 2 && s1->do_debug == 0) continue;
             s = s1->sections[i];
             if (shf[k] != (s->sh_flags & (SHF_ALLOC|SHF_WRITE|SHF_EXECINSTR)))
                 continue;
@@ -495,8 +509,6 @@ static void bt_link(TCCState *s1)
 {
 #ifdef CONFIG_TCC_BACKTRACE
     rt_context *rc;
-    void *p;
-
     if (!s1->do_backtrace)
         return;
     rc = tcc_get_symbol(s1, "__rt_info");
@@ -509,6 +521,7 @@ static void bt_link(TCCState *s1)
         rc->prog_base &= 0xffffffff00000000ULL;
 #ifdef CONFIG_TCC_BCHECK
     if (s1->do_bounds_check) {
+        void *p;
         if ((p = tcc_get_symbol(s1, "__bound_init")))
             ((void(*)(void*,int))p)(rc->bounds_start, 1);
     }
@@ -597,6 +610,13 @@ static void rt_exit(rt_frame *f, int code)
     s = rt_find_state(f);
     rt_post_sem();
     if (s && s->run_lj) {
+#ifdef CONFIG_TCC_BCHECK
+        if (f->fp) { /* called from signal */
+            void *p = tcc_get_symbol(s, "__bound_exit");
+            if (p)
+                ((void (*)(void))p)();
+        }
+#endif
         if (code == 0)
             code = RT_EXIT_ZERO;
         ((void(*)(void*,int))s->run_lj)(s->run_jb, code);

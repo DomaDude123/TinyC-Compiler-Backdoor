@@ -40,7 +40,7 @@
 #elif defined(TCC_TARGET_ARM64)
 #include "arm64-gen.c"
 #include "arm64-link.c"
-#include "arm-asm.c"
+#include "arm64-asm.c"
 #elif defined(TCC_TARGET_C67)
 #include "c67-gen.c"
 #include "c67-link.c"
@@ -257,6 +257,7 @@ ST_FUNC void libc_free(void *ptr)
     free(ptr);
 }
 
+/* defined to be not used */
 #define free(p) use_tcc_free(p)
 #define realloc(p, s) use_tcc_realloc(p, s)
 
@@ -314,7 +315,7 @@ PUB_FUNC char *tcc_strdup(const char *str)
 #define MEM_DEBUG_MAGIC3 0xFEEDDEB3
 #define MEM_DEBUG_FILE_LEN 40
 #define MEM_DEBUG_CHECK3(header) \
-    ((mem_debug_header_t*)((char*)header + header->size))->magic3
+    (((unsigned char *) header->magic3) + header->size)
 #define MEM_USER_PTR(header) \
     ((char *)header + offsetof(mem_debug_header_t, magic3))
 #define MEM_HEADER_PTR(ptr) \
@@ -326,7 +327,7 @@ struct mem_debug_header {
     struct mem_debug_header *prev;
     struct mem_debug_header *next;
     int line_num;
-    char file_name[MEM_DEBUG_FILE_LEN + 1];
+    char file_name[MEM_DEBUG_FILE_LEN];
     unsigned magic2;
     ALIGNED(16) unsigned char magic3[4];
 };
@@ -367,9 +368,8 @@ PUB_FUNC void *tcc_malloc_debug(unsigned long size, const char *file, int line)
     header->size = size;
     write32le(MEM_DEBUG_CHECK3(header), MEM_DEBUG_MAGIC3);
     header->line_num = line;
-    ofs = strlen(file) - MEM_DEBUG_FILE_LEN;
-    strncpy(header->file_name, file + (ofs > 0 ? ofs : 0), MEM_DEBUG_FILE_LEN);
-    header->file_name[MEM_DEBUG_FILE_LEN] = 0;
+    ofs = strlen(file) + 1 - MEM_DEBUG_FILE_LEN;
+    strcpy(header->file_name, file + (ofs > 0 ? ofs : 0));
     WAIT_SEM(&mem_sem);
     header->next = mem_debug_chain;
     header->prev = NULL;
@@ -791,7 +791,7 @@ ST_FUNC int tcc_open(TCCState *s1, const char *filename)
 }
 
 /* compile the file opened in 'file'. Return non zero if errors. */
-static int tcc_compile(TCCState *s1, int filetype, const char *str, int fd)
+static int tcc_compile(TCCState *s1, int filetype, const char *str, int fd, const char *filename)
 {
     /* Here we enter the code section where we use the global variables for
        parsing and code generation (tccpp.c, tccgen.c, <target>-gen.c).
@@ -804,12 +804,19 @@ static int tcc_compile(TCCState *s1, int filetype, const char *str, int fd)
     s1->error_set_jmp_enabled = 1;
 
     if (setjmp(s1->error_jmp_buf) == 0) {
-        s1->nb_errors = 0;
 
         if (fd == -1) {
             int len = strlen(str);
-            tcc_open_bf(s1, "<string>", len);
+            tcc_open_bf(s1, filename ? filename : "<string>", len);
             memcpy(file->buffer, str, len);
+	    if (s1->do_debug && filename) {
+		FILE *fp = fopen(filename, "w");
+
+		if (fp) {
+		    fputs(str, fp);
+		    fclose(fp);
+		}
+	    }
         } else {
             tcc_open_bf(s1, str, 0);
             file->fd = fd;
@@ -839,7 +846,12 @@ static int tcc_compile(TCCState *s1, int filetype, const char *str, int fd)
 
 LIBTCCAPI int tcc_compile_string(TCCState *s, const char *str)
 {
-    return tcc_compile(s, s->filetype, str, -1);
+    return tcc_compile(s, s->filetype, str, -1, NULL);
+}
+
+LIBTCCAPI int tcc_compile_string_file(TCCState *s, const char *str, const char *filename)
+{
+    return tcc_compile(s, s->filetype, str, -1, filename);
 }
 
 /* define a preprocessor symbol. value can be NULL, sym can be "sym=val" */
@@ -1234,7 +1246,7 @@ ST_FUNC int tcc_add_file_internal(TCCState *s1, const char *filename, int flags)
         return tcc_add_binary(s1, flags, filename, fd);
 
     dynarray_add(&s1->target_deps, &s1->nb_target_deps, tcc_strdup(filename));
-    return tcc_compile(s1, flags, filename, fd);
+    return tcc_compile(s1, flags, filename, fd, NULL);
 }
 
 LIBTCCAPI int tcc_add_file(TCCState *s, const char *filename)
@@ -1457,6 +1469,8 @@ static int tcc_set_linker(TCCState *s, const char *optarg)
             s->filetype |= AFF_WHOLE_ARCHIVE;
         } else if (link_option(&o, "no-whole-archive")) {
             s->filetype &= ~AFF_WHOLE_ARCHIVE;
+        } else if (link_option(&o, "znodelete")) {
+            s->znodelete = 1;
 #ifdef TCC_TARGET_PE
         } else if (link_option(&o, "large-address-aware")) {
             s->pe_characteristics |= 0x20;
@@ -1465,31 +1479,9 @@ static int tcc_set_linker(TCCState *s, const char *optarg)
         } else if (link_option(&o, "stack=")) {
             s->pe_stack_size = strtoul(o.arg, &end, 10);
         } else if (link_option(&o, "subsystem=")) {
-#if defined(TCC_TARGET_I386) || defined(TCC_TARGET_X86_64)
-            if (0==strcmp("native", o.arg)) {
-                s->pe_subsystem = 1;
-            } else if (0==strcmp("console", o.arg)) {
-                s->pe_subsystem = 3;
-            } else if (0==strcmp("gui", o.arg) || 0==strcmp("windows", o.arg)) {
-                s->pe_subsystem = 2;
-            } else if (0==strcmp("posix", o.arg)) {
-                s->pe_subsystem = 7;
-            } else if (0==strcmp("efiapp", o.arg)) {
-                s->pe_subsystem = 10;
-            } else if (0==strcmp("efiboot", o.arg)) {
-                s->pe_subsystem = 11;
-            } else if (0==strcmp("efiruntime", o.arg)) {
-                s->pe_subsystem = 12;
-            } else if (0==strcmp("efirom", o.arg)) {
-                s->pe_subsystem = 13;
-#elif defined(TCC_TARGET_ARM)
-            if (0==strcmp("wince", o.arg)) {
-                s->pe_subsystem = 9;
-#endif
-            } else
+            if (pe_setsubsy(s, o.arg) < 0)
                 goto err;
-#endif /* PE */
-#ifdef TCC_TARGET_MACHO
+#elif defined TCC_TARGET_MACHO
         } else if (link_option(&o, "all_load")) {
 	    s->filetype |= AFF_WHOLE_ARCHIVE;
         } else if (link_option(&o, "force_load=")) {
@@ -1568,6 +1560,7 @@ enum {
     TCC_OPTION_rdynamic,
     TCC_OPTION_pthread,
     TCC_OPTION_run,
+    TCC_OPTION_rstdin,
     TCC_OPTION_w,
     TCC_OPTION_E,
     TCC_OPTION_M,
@@ -1592,6 +1585,30 @@ enum {
 #define TCC_OPTION_HAS_ARG 0x0001
 #define TCC_OPTION_NOSEP   0x0002 /* cannot have space before option and arg */
 
+/*
+ * in tcc_options, if opt-string A is a prefix of opt-string B,
+ * it's un-ambiguous if and only if option A is without TCC_OPTION_HAS_ARG.
+ * otherwise (A with HAS_ARG), if, for instance, A is FOO and B is FOOBAR,
+ * then "-FOOBAR" is either A with arg BAR, or B (-FOOBARX too, if B HAS_ARG).
+ *
+ * tcc_parse_args searches tcc_options in order, so if ambiguous:
+ * - if the shorter (A) is earlier: the longer (B) is completely unreachable.
+ * - else B wins, and A can't be used with adjacent arg if it also matches B.
+ *
+ * there are few clashes currently, and the longer is always earlier/reachable.
+ * when it's ambiguous, shorter-concat-arg is not useful currently.
+ * the sh(1) script 'optclash' can identifiy clashes (tcc root dir, try "-h").
+ * at the time of writing, running './optclash' prints this:
+
+    -Wl,... (1642) overrides -W... (1644)
+    -Wp,... (1643) overrides -W... (1644)
+    -dumpmachine (1630) overrides -d... (1632)
+    -dumpversion (1631) overrides -d... (1632)
+    -dynamiclib (1623) overrides -d... (1632)
+    -flat_namespace (1624) overrides -f... (1650)
+    -mfloat-abi... (1647) overrides -m... (1649)
+
+ */
 static const TCCOption tcc_options[] = {
     { "h", TCC_OPTION_HELP, 0 },
     { "-help", TCC_OPTION_HELP, 0 },
@@ -1634,6 +1651,7 @@ static const TCCOption tcc_options[] = {
     { "o", TCC_OPTION_o, TCC_OPTION_HAS_ARG },
     { "pthread", TCC_OPTION_pthread, 0},
     { "run", TCC_OPTION_run, TCC_OPTION_HAS_ARG | TCC_OPTION_NOSEP },
+    { "rstdin", TCC_OPTION_rstdin, TCC_OPTION_HAS_ARG },
     { "rdynamic", TCC_OPTION_rdynamic, 0 },
     { "r", TCC_OPTION_r, 0 },
     { "Wl,", TCC_OPTION_Wl, TCC_OPTION_HAS_ARG | TCC_OPTION_NOSEP },
@@ -1653,10 +1671,10 @@ static const TCCOption tcc_options[] = {
     { "w", TCC_OPTION_w, 0 },
     { "E", TCC_OPTION_E, 0},
     { "M", TCC_OPTION_M, 0},
-    { "MD", TCC_OPTION_MD, 0},
-    { "MF", TCC_OPTION_MF, TCC_OPTION_HAS_ARG },
     { "MM", TCC_OPTION_MM, 0},
-    { "MMD", TCC_OPTION_MMD, 0},
+    { "MD", TCC_OPTION_MD, TCC_OPTION_HAS_ARG | TCC_OPTION_NOSEP },
+    { "MMD", TCC_OPTION_MMD, TCC_OPTION_HAS_ARG | TCC_OPTION_NOSEP },
+    { "MF", TCC_OPTION_MF, TCC_OPTION_HAS_ARG },
     { "MP", TCC_OPTION_MP, 0},
     { "x", TCC_OPTION_x, TCC_OPTION_HAS_ARG },
     /* tcctools */
@@ -1669,6 +1687,7 @@ static const TCCOption tcc_options[] = {
     { "C", 0, 0 },
     { "-param", 0, TCC_OPTION_HAS_ARG },
     { "pedantic", 0, 0 },
+    { "pie", 0, 0 },
     { "pipe", 0, 0 },
     { "s", 0, 0 },
     { "traditional", 0, 0 },
@@ -1829,6 +1848,27 @@ static void args_parser_add_file(TCCState *s, const char* filename, int filetype
         ++s->nb_libraries;
 }
 
+/*  parsing is between getopt(3) and getopt_long(3), and permuting-like:
+ *  - an option is 1 or more chars.
+ *  - at most 1 option per arg in argv.
+ *  - an option in argv is "-OPT[...]" (few are --OPT, if OPT is "-...").
+ *  - optarg is next arg, or adjacent non-empty (no '='. -std=.. is arg "=..").
+ *  - supports also adjacent-only optarg (typically optional).
+ *  - supports mixed options and operands ("--" is ignored, except with -run).
+ *  - -OPT[...] can be ambiguous, which is resolved using tcc_options's order.
+ *    (see tcc_options for details)
+ *
+ *  specifically, per arg of argv, in order:
+ *  - if arg begins with '@' and is not exactly "@": process as @listfile.
+ *  - elif arg is exactly "-" or doesn't begin with '-': process as input file.
+ *    - if -run... is already set: also stop, arg... become argv of run_main.
+ *  - elif arg is "--":
+ *    - if -run... is already set: stop, arg... become argv of run_main.
+ *    - else ignore it.
+ *  - else ("-STRING") try to apply it as option, maybe with next (opt)arg.
+ *
+ *  after all args, if -run... but no "stop": run_main gets our argv (tcc ...)
+ */
 /* using * to argc/argv to let "tcc -ar" benefit from @listfile expansion */
 PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
 {
@@ -1836,8 +1876,7 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
     const TCCOption *popt;
     const char *optarg, *r;
     const char *run = NULL;
-    int x;
-    int tool = 0, arg_start = 0, not_empty = 0, optind = 1;
+    int optind = 1, empty = 1, x;
     char **argv = *pargv;
     int argc = *pargc;
 
@@ -1856,22 +1895,12 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
             continue;
         }
         optind++;
-        if (tool) { /* ignore all except -v and @listfile */
-            s->verbose += !strcmp(r, "-v");
-            continue;
-        }
-
         if (r[0] != '-' || r[1] == '\0') { /* file or '-' (stdin) */
             args_parser_add_file(s, r, s->filetype);
-            not_empty = 1;
+            empty = 0;
         dorun:
-            if (run) {
-                /* tcc -run <file> <args...> */
-                if (tcc_set_options(s, run))
-                    return -1;
-                arg_start = optind - 1; /* argv[0] will be <file> */
+            if (run)
                 break;
-            }
             continue;
         }
         /* Also allow "tcc <files...> -run -- <args...>" */
@@ -1943,14 +1972,16 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
         case TCC_OPTION_g:
             s->do_debug = 2;
             s->dwarf = CONFIG_DWARF_VERSION;
+        g_redo:
             if (strstart("dwarf", &optarg)) {
                 s->dwarf = (*optarg) ? (0 - atoi(optarg)) : DEFAULT_DWARF_VERSION;
             } else if (0 == strcmp("stabs", optarg)) {
                 s->dwarf = 0;
             } else if (isnum(*optarg)) {
-                x = *optarg - '0';
+                x = *optarg++ - '0';
                 /* -g0 = no info, -g1 = lines/functions only, -g2 = full info */
                 s->do_debug = x > 2 ? 2 : x == 0 && s->do_backtrace ? 1 : x;
+                goto g_redo;
 #ifdef TCC_TARGET_PE
             } else if (0 == strcmp(".pdb", optarg)) {
                 s->dwarf = 5, s->do_debug |= 16;
@@ -1992,7 +2023,6 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
         case TCC_OPTION_o:
             if (s->outfile) {
                 tcc_warning("multiple -o option");
-                tcc_free(s->outfile);
             }
             tcc_set_str(&s->outfile, optarg);
             break;
@@ -2023,6 +2053,12 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
 #else
             return tcc_error_noabort("-run is not available in a cross compiler");
 #endif
+#ifdef TCC_IS_NATIVE
+        case TCC_OPTION_rstdin:
+            /* custom stdin for run_main */
+            s->run_stdin = optarg;
+            break;
+#endif
         case TCC_OPTION_v:
             do ++s->verbose; while (*optarg++ == 'v');
             continue;
@@ -2051,7 +2087,6 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
             }
             break;
         case TCC_OPTION_W:
-            s->warn_none = 0;
             if (optarg[0] && set_flag(s, options_W, optarg) < 0)
                 goto unsupported_option;
             break;
@@ -2075,33 +2110,41 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
         case TCC_OPTION_P:
             s->Pflag = atoi(optarg) + 1;
             break;
+
         case TCC_OPTION_M:
             s->include_sys_deps = 1;
             // fall through
         case TCC_OPTION_MM:
             s->just_deps = 1;
-            if(!s->deps_outfile)
+            s->gen_deps = 1;
+            if (!s->deps_outfile)
                 tcc_set_str(&s->deps_outfile, "-");
+            break;
+        case TCC_OPTION_MD:
+            s->include_sys_deps = 1;
             // fall through
         case TCC_OPTION_MMD:
             s->gen_deps = 1;
-            break;
-        case TCC_OPTION_MD:
-            s->gen_deps = 1;
-            s->include_sys_deps = 1;
-            break;
+            /* usually, only "-MMD" is used */
+            /* but the Linux Kernel uses "-MMD,depfile" */
+            if (*optarg != ',')
+                break;
+            ++optarg;
+            // fall through
         case TCC_OPTION_MF:
             tcc_set_str(&s->deps_outfile, optarg);
             break;
         case TCC_OPTION_MP:
             s->gen_phony_deps = 1;
             break;
+
         case TCC_OPTION_dumpmachine:
             printf("%s\n", dumpmachine_str);
             exit(0);
         case TCC_OPTION_dumpversion:
             printf ("%s\n", TCC_VERSION);
             exit(0);
+
         case TCC_OPTION_x:
             x = 0;
             if (*optarg == 'c')
@@ -2154,29 +2197,30 @@ PUB_FUNC int tcc_parse_args(TCCState *s, int *pargc, char ***pargv)
         case TCC_OPTION_ar:
             x = OPT_AR;
         extra_action:
-            arg_start = optind - 1;
-            if (not_empty)
+            if (NULL == argv[0]) /* from tcc_set_options() */
+                return -1;
+            if (!empty && x)
                 return tcc_error_noabort("cannot parse %s here", r);
-            tool = x;
-            break;
+            --optind;
+            *pargc = argc - optind;
+            *pargv = argv + optind;
+            return x;
         default:
 unsupported_option:
             tcc_warning_c(warn_unsupported)("unsupported option '%s'", r);
             break;
         }
-        not_empty = 1;
+        empty = 0;
     }
-
     if (s->link_optind < s->link_argc)
         return tcc_error_noabort("argument to '-Wl,%s' is missing", s->link_argv[s->link_optind]);
-    if (NULL == argv[0]) /* from tcc_set_options() */
-        return 0;
-    if (arg_start) {
-        *pargc = argc - arg_start;
-        *pargv = argv + arg_start;
-        return tool;
+    if (run) {
+        if (*run && tcc_set_options(s, run) < 0)
+            return -1;
+        x = 0;
+        goto extra_action;
     }
-    if (not_empty)
+    if (!empty)
         return 0;
     if (s->verbose == 2)
         return OPT_PRINT_DIRS;

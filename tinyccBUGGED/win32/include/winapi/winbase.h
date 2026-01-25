@@ -859,7 +859,7 @@ extern "C" {
   }
 #endif
 
-#ifndef !defined (InterlockedAnd64)
+#ifndef InterlockedAnd64
 #define InterlockedAnd64 InterlockedAnd64_Inline
 
   __CRT_INLINE LONGLONG InterlockedAnd64_Inline (LONGLONG volatile *Destination,LONGLONG Value) {
@@ -1847,7 +1847,7 @@ extern "C" {
 #define LOAD_LIBRARY_AS_DATAFILE 0x2
 #define LOAD_WITH_ALTERED_SEARCH_PATH 0x8
 #define LOAD_IGNORE_CODE_AUTHZ_LEVEL 0x10
-#define LOAD_LINRARY_AS_IMAGE_RESOURCE 0x20
+#define LOAD_LIBRARY_AS_IMAGE_RESOURCE 0x20
 #define LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE 0x40
 #define LOAD_LIBRARY_REQUIRE_SIGNED_TARGET 0x80
 #define LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR 0x100

@@ -239,14 +239,24 @@ endif
 tcc.o : DEFINES += -DONE_SOURCE=0
 DEFINES += -I$(TOP)
 
+GITHASH:=$(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo no)
+ifneq ($(GITHASH),no)
+GITHASH:=$(shell git log -1 --date=short --pretty='format:%cd $(GITHASH)@%h')
+GITMODF:=$(shell git diff --quiet || echo '*')
+DEF_GITHASH:= -DTCC_GITHASH="\"$(GITHASH)$(GITMODF)\""
+endif
+
 ifeq ($(CONFIG_debug),yes)
 CFLAGS += -g
 LDFLAGS += -g
 endif
 
 # convert "include/tccdefs.h" to "tccdefs_.h"
-%_.h : include/%.h conftest.c
-	$S$(CC) -DC2STR $(filter %.c,$^) -o c2str.exe && ./c2str.exe $< $@
+%_.h : include/%.h c2str.exe
+	$S./c2str.exe $< $@
+
+c2str.exe : conftest.c
+	$S$(CC) -DC2STR $< -o $@
 
 # target specific object rule
 $(X)%.o : %.c $(LIBTCC_INC)
@@ -280,6 +290,11 @@ tcc_p$(EXESUF): $($T_FILES)
 # static libtcc library
 libtcc.a: $(LIBTCC_OBJ)
 	$S$(AR) rcs $@ $^
+
+ifeq ($(CC_NAME)-$(ARCH),clang-x86_64)
+# avoid 32-bit relocations in libtcc.a for its usage with tcc -run
+libtcc.a: override CFLAGS += -fPIC
+endif
 
 # dynamic libtcc library
 libtcc.so: $(LIBTCC_OBJ)
@@ -343,8 +358,8 @@ doc : $(TCCDOCS)
 # --------------------------------------------------------------------------
 # install
 
-INSTALL = install -m644
-INSTALLBIN = install -m755 $(STRIP_$(CONFIG_strip))
+INSTALL = install -m 644
+INSTALLBIN = install -m 755 $(STRIP_$(CONFIG_strip))
 STRIP_yes = -s
 
 LIBTCC1_W = $(filter %-win32-libtcc1.a %-wince-libtcc1.a,$(LIBTCC1_CROSS))
@@ -379,7 +394,7 @@ endif
 # uninstall
 uninstall-unx:
 	@rm -fv $(addprefix "$(bindir)/",$(PROGS) $(PROGS_CROSS))
-	@rm -fv $(addprefix "$(libdir)/", libtcc*.a libtcc*.so libtcc.dylib,$P)
+	@rm -fv $(addprefix "$(libdir)/", libtcc*.a libtcc*.so libtcc.dylib)
 	@rm -fv $(addprefix "$(includedir)/", libtcc.h)
 	@rm -fv "$(mandir)/man1/tcc.1" "$(infodir)/tcc-doc.info"
 	@rm -fv "$(docdir)/tcc-doc.html"
@@ -408,6 +423,13 @@ uninstall-win:
 	@rm -fr $(foreach P,doc examples include lib libtcc,"$(tccdir)"/$P/*)
 	@rm -frv $(foreach P,doc examples include lib libtcc,"$(tccdir)"/$P)
 
+# the msys-git shell works to configure && make except it does not have install
+ifeq ($(OS),Windows_NT)
+ifeq ($(shell $(call WHICH,install) || echo no),no)
+INSTALL = cp
+INSTALLBIN = cp
+endif
+endif
 
 # --------------------------------------------------------------------------
 # other stuff
@@ -416,6 +438,24 @@ TAGFILES = *.[ch] include/*.h lib/*.[chS]
 tags : ; ctags $(TAGFILES)
 # cannot have both tags and TAGS on windows
 ETAGS : ; etags $(TAGFILES)
+
+# create release tarball from *current* git branch (including tcc-doc.html
+# and converting two files to CRLF)
+TCC-VERSION = tcc-$(VERSION)
+TCC-VERSION = tinycc-mob-$(shell git rev-parse --short=7 HEAD)
+tar:    tcc-doc.html
+	mkdir -p $(TCC-VERSION)
+	( cd $(TCC-VERSION) && git --git-dir ../.git checkout -f )
+	cp tcc-doc.html $(TCC-VERSION)
+	for f in tcc-win32.txt build-tcc.bat ; do \
+	    cat win32/$$f | sed 's,\(.*\),\1\r,g' > $(TCC-VERSION)/win32/$$f ; \
+	done
+	tar cjf $(TCC-VERSION).tar.bz2 $(TCC-VERSION)
+	rm -rf $(TCC-VERSION)
+	git reset
+
+config.mak:
+	$(if $(wildcard $@),,@echo "Please run ./configure." && exit 1)
 
 # run all tests
 test:
@@ -432,12 +472,17 @@ tcov-tes% : tcc_c$(EXESUF)
 	@$(MAKE) --no-print-directory TCC_LOCAL=$(CURDIR)/$< tes$*
 tcc_c$(EXESUF): $($T_FILES)
 	$S$(TCC) tcc.c -o $@ -ftest-coverage $(DEFINES) $(LIBS)
+# run tests with sanitize option
+sani-tes% : tcc_s$(EXESUF)
+	@$(MAKE) --no-print-directory TCC_LOCAL=$(CURDIR)/$< tes$*
+tcc_s$(EXESUF): $($T_FILES)
+	$S$(CC) tcc.c -o $@ -fsanitize=address,undefined $(DEFINES) $(CFLAGS) $(LDFLAGS) $(LIBS)
 # test the installed tcc instead
 test-install: $(TCCDEFS_H)
 	@$(MAKE) -C tests TESTINSTALL=yes #_all
 
 clean:
-	@rm -f tcc *-tcc tcc_p tcc_c
+	@rm -f tcc *-tcc tcc_p tcc_c tcc_s
 	@rm -f tags ETAGS *.o *.a *.so* *.out *.log lib*.def *.exe *.dll
 	@rm -f a.out *.dylib *_.h *.pod *.tcov
 	@$(MAKE) -s -C lib $@
@@ -466,8 +511,10 @@ help:
 	@echo "   run all/single test(s) from tests2, optionally update .expect"
 	@echo "make testspp.all / make testspp.17"
 	@echo "   run all/single test(s) from tests/pp"
-	@echo "make tcov-test / tcov-tests2... / tcov-testspp..."
+	@echo "make tcov-test / tcov-tests2.37 / tcov-testspp.17"
 	@echo "   run tests as above with code coverage. After test(s) see tcc_c$(EXESUF).tcov"
+	@echo "make sani-test / sani-tests2.37 / sani-testspp.17"
+	@echo "   run tests as above with sanitize option."
 	@echo "make test-install"
 	@echo "   run tests with the installed tcc"
 	@echo "Other supported make targets:"
