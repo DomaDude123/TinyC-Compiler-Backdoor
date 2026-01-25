@@ -130,6 +130,6 @@ Login successful
 The only changes made to the clean source were in `libtcc.c` in the function
 `ST_FUNC int tcc_add_file_internal(TCCState *s1, const char *filename, int flags)
 
-To understand how this behavior is possible, take a look at this [Wikipedia](https://en.wikipedia.org/wiki/Quine_(computing)) article and the file `c-quine-example.c` in the root of this repository, which implements a short but famous quine in C.
+To understand how this behavior is possible, take a look at this [Wikipedia article](https://en.wikipedia.org/wiki/Quine_(computing)) and the file `c-quine-example.c` in the root of this repository, which implements a short but famous quine in C.
 
 
