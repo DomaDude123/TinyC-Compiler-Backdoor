@@ -1,5 +1,5 @@
 
-
+### Overview
 This repository demonstrates a self-propagating compiler backdoor implemented in TinyCC. A backdoored compiler is able to:
 
 1. Inject a hidden authentication backdoor into specific programs at compile time.
